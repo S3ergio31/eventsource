@@ -1,0 +1,8 @@
+api/vendor/
+api/.env
+api/database/*.sqlite
+api/storage/logs/*.log
+api/bootstrap/cache/*.php
+web/node_modules/
+web/dist/
+web/.angular/

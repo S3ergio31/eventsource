@@ -1,0 +1,24 @@
+{
+	skip_install_trust
+	auto_https off
+	admin off
+
+	frankenphp {
+		# Modo clasico (sin worker): FrankenPHP atiende cada peticion en un hilo
+		# propio. Como una conexion SSE ocupa su hilo durante toda su vida, este
+		# numero es literalmente el techo de streams simultaneos que soporta el
+		# contenedor. Es el limite del que habla el README: escalar esto a miles
+		# es lo que obliga a sacar el borde SSE de PHP.
+		num_threads 64
+	}
+}
+
+:8000 {
+	root /app/public
+
+	# A proposito NO usamos `encode`: comprimir un text/event-stream agrega
+	# buffering en el camino y es la causa mas comun de "el navegador no recibe
+	# nada hasta que se cierra la conexion".
+
+	php_server
+}
