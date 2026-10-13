@@ -20,5 +20,32 @@
 	# buffering en el camino y es la causa mas comun de "el navegador no recibe
 	# nada hasta que se cierra la conexion".
 
-	php_server
+	# `route` respeta el orden escrito: /.well-known/mercure lo atiende el hub
+	# antes de llegar a PHP; todo lo demas sigue a Laravel.
+	route {
+		# Hub Mercure del driver 'mercure'. Es Go dentro del mismo binario:
+		# cada suscriptor es una goroutine, no uno de los num_threads de PHP.
+		mercure {
+			# Historial en disco: con el se reponen eventos por Last-Event-ID.
+			# Efimero como Redis (sin volumen), alcanza para reconexiones.
+			transport bolt {
+				path /data/mercure.db
+				size 1000
+			}
+
+			# Claves HS256 de los JWT. Laravel firma con las mismas (ver
+			# config/broadcasting.php); vienen del environment del contenedor
+			# y se sustituyen al cargar el Caddyfile ({$VAR}).
+			publisher_jwt {$MERCURE_PUBLISHER_JWT_KEY} HS256
+			subscriber_jwt {$MERCURE_SUBSCRIBER_JWT_KEY} HS256
+
+			# El navegador se suscribe desde el dev server de Angular.
+			cors_origins {$MERCURE_CORS_ORIGINS:http://localhost:4200}
+
+			# Sin `anonymous`: no se puede suscribir nadie sin JWT, y las
+			# publicaciones privadas solo llegan a quien tenga el topic.
+		}
+
+		php_server
+	}
 }

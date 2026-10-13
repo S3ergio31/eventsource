@@ -49,6 +49,11 @@ services:
       REDIS_PORT: 6379
       DYNAMODB_ENDPOINT: http://dynamodb:8000
       WS_MANAGEMENT_ENDPOINT: http://gateway-local:3001
+      # Hub Mercure dentro de FrankenPHP. Caddy lee estas claves del entorno
+      # del proceso (no del .env), y Laravel las toma de aca tambien.
+      MERCURE_PUBLISHER_JWT_KEY: dev-only-mercure-publisher-key-min-32-bytes
+      MERCURE_SUBSCRIBER_JWT_KEY: dev-only-mercure-subscriber-key-min-32-bytes
+      MERCURE_CORS_ORIGINS: http://localhost:4200
     depends_on:
       redis:
         condition: service_healthy

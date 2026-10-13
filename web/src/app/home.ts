@@ -1,14 +1,15 @@
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { Router } from '@angular/router';
 import { AuthService } from './auth.service';
+import { MercureService } from './mercure.service';
 import { SseService } from './sse.service';
 import { TransportFeed } from './transport-feed';
 import { WsService } from './ws.service';
 
 /**
- * Los dos transportes lado a lado. El backend manda cada evento por los dos
+ * Los tres transportes lado a lado. El backend manda cada evento por los tres
  * drivers a la vez (ver UserNotification::broadcastConnections()), asi que
- * un mismo demo:notify aparece en ambas columnas con su latencia.
+ * un mismo demo:notify aparece en todas las columnas con su latencia.
  */
 @Component({
   selector: 'app-home',
@@ -26,7 +27,7 @@ import { WsService } from './ws.service';
       </header>
 
       <section class="howto">
-        <p>Despacha un evento desde otra terminal; llega por los dos transportes:</p>
+        <p>Despacha un evento desde otra terminal; llega por los tres transportes:</p>
         <pre>docker compose exec api php artisan demo:notify {{ session()?.user.id }} "hola"</pre>
       </section>
 
@@ -41,6 +42,11 @@ import { WsService } from './ws.service';
           subtitle="API Gateway sostiene el WebSocket · DynamoDB"
           [transport]="ws"
         />
+        <app-transport-feed
+          title="Mercure"
+          subtitle="El hub Go de FrankenPHP sostiene el stream · Bolt"
+          [transport]="mercure"
+        />
       </div>
     </main>
   `,
@@ -48,7 +54,7 @@ import { WsService } from './ws.service';
     .shell {
       display: grid;
       gap: 20px;
-      max-width: 1040px;
+      max-width: 1200px;
       margin: 0 auto;
       padding: 32px 20px 64px;
     }
@@ -114,6 +120,7 @@ export class HomePage implements OnInit, OnDestroy {
 
   readonly sse = inject(SseService);
   readonly ws = inject(WsService);
+  readonly mercure = inject(MercureService);
   readonly session = this.auth.session;
 
   ngOnInit(): void {
@@ -122,16 +129,18 @@ export class HomePage implements OnInit, OnDestroy {
     if (session) {
       this.sse.connect(session.token, session.channel);
       this.ws.connect(session.token, session.channel);
+      this.mercure.connect(session.token, session.channel);
     }
   }
 
   ngOnDestroy(): void {
     this.sse.disconnect();
     this.ws.disconnect();
+    this.mercure.disconnect();
   }
 
   logout(): void {
-    for (const transport of [this.sse, this.ws]) {
+    for (const transport of [this.sse, this.ws, this.mercure]) {
       transport.disconnect();
       transport.clear();
     }

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\MercureTokenController;
 use App\Http\Controllers\SseController;
 use App\Http\Controllers\WsGatewayController;
 use App\Http\Controllers\WsTicketController;
@@ -16,6 +17,9 @@ Route::middleware('jwt')->group(function () {
 
     // Canje del JWT de sesion por un ticket corto para abrir el WebSocket.
     Route::post('/ws/ticket', WsTicketController::class);
+
+    // Canje del JWT de sesion por un JWT de suscriptor del hub Mercure.
+    Route::post('/mercure/token', MercureTokenController::class);
 });
 
 // Las llama API Gateway (o gateway-local), no el navegador.

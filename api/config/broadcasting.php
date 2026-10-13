@@ -4,9 +4,9 @@ return [
 
     'default' => env('BROADCAST_CONNECTION', 'sse'),
 
-    // Conexiones por las que sale UserNotification. Con las dos, un mismo
-    // demo:notify llega por SSE y por API Gateway para compararlos.
-    'fanout' => array_values(array_filter(explode(',', env('BROADCAST_FANOUT', 'sse,apigateway')))),
+    // Conexiones por las que sale UserNotification. Con las tres, un mismo
+    // demo:notify llega por SSE, API Gateway y Mercure para compararlos.
+    'fanout' => array_values(array_filter(explode(',', env('BROADCAST_FANOUT', 'sse,apigateway,mercure')))),
 
     'connections' => [
 
@@ -54,6 +54,30 @@ return [
 
             // Segundos que se guarda cada evento para reponer reconexiones.
             'events_ttl' => (int) env('WS_EVENTS_TTL', 86400),
+        ],
+
+        // Tercer driver custom: el hub Mercure integrado en FrankenPHP sostiene
+        // las conexiones SSE y Laravel solo publica. Ver docker/Caddyfile.
+        // Registrado con Broadcast::extend('mercure') en BroadcastServiceProvider.
+        'mercure' => [
+            'driver' => 'mercure',
+
+            // Donde publica Laravel. El hub vive en el mismo FrankenPHP, asi
+            // que desde adentro del contenedor es localhost.
+            'hub_url' => env('MERCURE_URL', 'http://localhost:8000/.well-known/mercure'),
+
+            // Donde se suscribe el navegador.
+            'public_url' => env('MERCURE_PUBLIC_URL', 'http://localhost:8000/.well-known/mercure'),
+
+            // Las mismas claves que usa el hub (Caddyfile). Caddy las lee del
+            // entorno del contenedor, no del .env: ver docker-compose.yml.
+            'publisher_key' => env('MERCURE_PUBLISHER_JWT_KEY'),
+            'subscriber_key' => env('MERCURE_SUBSCRIBER_JWT_KEY'),
+
+            // Segundos de vida del JWT de suscriptor. El hub no vuelve a
+            // consultar a Laravel mientras sea valido: es la ventana en la que
+            // un acceso revocado todavia funciona.
+            'subscriber_ttl' => (int) env('MERCURE_SUBSCRIBER_TTL', 3600),
         ],
 
         'log' => [
