@@ -29,10 +29,13 @@ class DemoNotify extends Command
         $message = (string) $this->argument('message');
 
         // Esta es la unica linea que importa: se despacha el evento normalmente.
-        // El driver 'sse' lo convierte en un XADD a Redis.
-         UserNotification::dispatch($user->id, $message);
+        // El driver 'sse' lo convierte en un XADD a Redis y el 'apigateway' en
+        // un PutItem a DynamoDB + un PostToConnection por suscriptor.
+        UserNotification::dispatch($user->id, $message);
 
-        $this->info("1.Evento despachado a private-user.{$user->id} ({$user->email}): {$message}");
+        $via = implode(' + ', config('broadcasting.fanout'));
+
+        $this->info("Evento despachado a private-user.{$user->id} ({$user->email}) via {$via}: {$message}");
 
         return self::SUCCESS;
     }

@@ -1,7 +1,7 @@
 FROM dunglas/frankenphp:php8.4
 
-# pdo_sqlite ya viene en la imagen. Agregamos phpredis (el XADD/XREAD) y opcache.
-RUN install-php-extensions redis opcache
+# pdo_sqlite ya viene en la imagen. Agregamos phpredis (el XADD/XREAD), opcache y zip (para composer).
+RUN install-php-extensions redis opcache zip
 
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 

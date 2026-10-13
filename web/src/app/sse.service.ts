@@ -1,14 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 import { EventSourceMessage, fetchEventSource } from '@microsoft/fetch-event-source';
 import { API_BASE } from './api.config';
-
-export interface Notification {
-  id: string;
-  message: string;
-  sentAt: string;
-}
-
-export type ConnectionState = 'idle' | 'connecting' | 'open' | 'retrying' | 'error';
+import { ConnectionState, Notification, Transport } from './transport';
 
 /**
  * Error que NO debe reintentarse (401, 403, 400). Si lo relanzamos desde
@@ -28,7 +21,7 @@ class FatalError extends Error {}
  * y el reenvio del header Last-Event-ID los maneja ella.
  */
 @Injectable({ providedIn: 'root' })
-export class SseService {
+export class SseService implements Transport {
   readonly state = signal<ConnectionState>('idle');
   readonly events = signal<Notification[]>([]);
   readonly lastError = signal<string | null>(null);
@@ -129,6 +122,7 @@ export class SseService {
           id: event.id || crypto.randomUUID(),
           message: payload.message,
           sentAt: payload.sentAt,
+          receivedAt: Date.now(),
         };
         this.events.update((list) => [notification, ...list].slice(0, 50));
         break;

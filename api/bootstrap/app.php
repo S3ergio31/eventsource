@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsureGatewaySecret;
 use App\Http\Middleware\EnsureJwt;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -22,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'jwt' => EnsureJwt::class,
+            'gateway' => EnsureGatewaySecret::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

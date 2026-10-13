@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Transporte 'apigateway' del demo eventsource: WebSocket API de API Gateway
+  que llama a Laravel por HTTP, tres tablas DynamoDB y la politica IAM que
+  necesita Laravel. Laravel no se despliega aca: se indica su URL publica.
+
+Parameters:
+  BackendUrl:
+    Type: String
+    Description: >
+      URL publica de Laravel, sin barra final (p. ej. la de un tunel
+      cloudflared/ngrok hacia localhost:8000, o el ALB de produccion).
+    AllowedPattern: "^https?://[^/]+$"
+  GatewaySecret:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Mismo valor que WS_GATEWAY_SECRET en el .env de Laravel.
+  StageName:
+    Type: String
+    Default: prod
+  TablePrefix:
+    Type: String
+    Default: ws_
+    Description: Mismo valor que WS_TABLE_PREFIX en el .env de Laravel.
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # WebSocket API
+  # ---------------------------------------------------------------------------
+
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-ws"
+      ProtocolType: WEBSOCKET
+      # {"action":"subscribe", ...} -> ruta 'subscribe'
+      RouteSelectionExpression: "$request.body.action"
+
+  # Cada integracion es un POST a Laravel con el connectionId y el secreto en
+  # headers (ver EnsureGatewaySecret y WsGatewayController). Los valores
+  # estaticos van entre comillas simples.
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub "${BackendUrl}/api/ws/gateway/connect"
+      RequestParameters:
+        integration.request.header.X-Connection-Id: context.connectionId
+        integration.request.header.X-Gateway-Secret: !Sub "'${GatewaySecret}'"
+        integration.request.querystring.ticket: route.request.querystring.ticket
+
+  SubscribeIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub "${BackendUrl}/api/ws/gateway/subscribe"
+      RequestParameters:
+        integration.request.header.X-Connection-Id: context.connectionId
+        integration.request.header.X-Gateway-Secret: !Sub "'${GatewaySecret}'"
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub "${BackendUrl}/api/ws/gateway/disconnect"
+      RequestParameters:
+        integration.request.header.X-Connection-Id: context.connectionId
+        integration.request.header.X-Gateway-Secret: !Sub "'${GatewaySecret}'"
+
+  # El ping del cliente (cada 5 min, para no llegar al idle de 10) no necesita
+  # llegar a Laravel: lo contesta API Gateway solo.
+  PingIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: MOCK
+      TemplateSelectionExpression: "\\$default"
+      RequestTemplates:
+        "$default": '{"statusCode": 200}'
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "$connect"
+      AuthorizationType: NONE
+      RequestParameters:
+        route.request.querystring.ticket:
+          Required: true
+      Target: !Sub "integrations/${ConnectIntegration}"
+
+  SubscribeRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: subscribe
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${SubscribeIntegration}"
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "$disconnect"
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${DisconnectIntegration}"
+
+  PingRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: ping
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${PingIntegration}"
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    DependsOn: [ConnectRoute, SubscribeRoute, DisconnectRoute, PingRoute]
+    Properties:
+      ApiId: !Ref WebSocketApi
+      StageName: !Ref StageName
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 500
+        ThrottlingRateLimit: 1000
+
+  # ---------------------------------------------------------------------------
+  # DynamoDB (ver app/Broadcasting/ApiGateway/ConnectionStore.php)
+  # ---------------------------------------------------------------------------
+
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${TablePrefix}connections"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: connectionId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: connectionId, KeyType: HASH }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+
+  SubscriptionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${TablePrefix}subscriptions"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: channel, AttributeType: S }
+        - { AttributeName: connectionId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: channel, KeyType: HASH }
+        - { AttributeName: connectionId, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+
+  EventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${TablePrefix}events"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: channel, AttributeType: S }
+        - { AttributeName: eventId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: channel, KeyType: HASH }
+        - { AttributeName: eventId, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+
+  # ---------------------------------------------------------------------------
+  # Lo minimo que necesita Laravel. Adjuntala al rol de la tarea (ECS/EC2) o,
+  # para la demo, a un usuario IAM cuyas claves van en AWS_ACCESS_KEY_ID.
+  # ---------------------------------------------------------------------------
+
+  LaravelPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Permisos del driver de broadcasting 'apigateway' de Laravel
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PostToConnection
+            Effect: Allow
+            Action: execute-api:ManageConnections
+            Resource: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${StageName}/*/@connections/*"
+          - Sid: ConnectionState
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+            Resource:
+              - !GetAtt ConnectionsTable.Arn
+              - !GetAtt SubscriptionsTable.Arn
+              - !GetAtt EventsTable.Arn
+
+Outputs:
+  WebSocketUrl:
+    Description: WS_URL en web/src/app/api.config.ts
+    Value: !Sub "wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+  ManagementEndpoint:
+    Description: WS_MANAGEMENT_ENDPOINT en el .env de Laravel
+    Value: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+  LaravelPolicyArn:
+    Description: Politica a adjuntar al rol o usuario IAM de Laravel
+    Value: !Ref LaravelPolicy

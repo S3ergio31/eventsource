@@ -1,0 +1,12 @@
+{
+  "name": "gateway-local",
+  "private": true,
+  "type": "module",
+  "description": "Emulador minimo de API Gateway WebSocket para desarrollo local",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

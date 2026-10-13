@@ -13,6 +13,10 @@ use Illuminate\Foundation\Events\Dispatchable;
  *
  * ShouldBroadcastNow (en lugar de ShouldBroadcast) lo emite de forma sincrona,
  * asi la maqueta no necesita un worker de colas.
+ *
+ * broadcastConnections() lo manda por varios drivers a la vez (por defecto
+ * 'sse' y 'apigateway'). Laravel arma el payload una sola vez y se lo pasa a
+ * cada driver, asi que 'sentAt' es identico en ambos y la latencia se compara.
  */
 class UserNotification implements ShouldBroadcastNow
 {
@@ -34,6 +38,14 @@ class UserNotification implements ShouldBroadcastNow
     }
 
     /**
+     * @return list<string>
+     */
+    public function broadcastConnections(): array
+    {
+        return config('broadcasting.fanout');
+    }
+
+    /**
      * Nombre del evento tal como lo vera el front en el campo "event:" de SSE.
      */
     public function broadcastAs(): string
@@ -49,7 +61,8 @@ class UserNotification implements ShouldBroadcastNow
         return [
             'userId' => $this->userId,
             'message' => $this->message,
-            'sentAt' => now()->toIso8601String(),
+            // Con milisegundos: el front calcula la latencia de cada transporte.
+            'sentAt' => now()->format('Y-m-d\TH:i:s.vP'),
         ];
     }
 }

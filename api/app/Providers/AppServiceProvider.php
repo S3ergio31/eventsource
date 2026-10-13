@@ -17,6 +17,7 @@ class AppServiceProvider extends ServiceProvider
                 algo: $config['algo'],
                 ttl: (int) $config['ttl'],
                 issuer: $config['issuer'],
+                wsTicketTtl: (int) $app['config']['ws.ticket_ttl'],
             );
         });
     }
