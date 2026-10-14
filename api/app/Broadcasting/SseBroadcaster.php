@@ -41,8 +41,8 @@ class SseBroadcaster extends Broadcaster
 
     /**
      * Endpoint POST /api/broadcasting/auth. Lo dejamos funcionando por
-     * compatibilidad con el flujo estandar de Laravel, aunque el front de esta
-     * maqueta no lo usa: el SseController autoriza en linea con canAccess().
+     * compatibilidad con el flujo estandar de Laravel, aunque el cliente de
+     * este driver no lo usa: el SseController autoriza en linea con canAccess().
      */
     public function auth($request)
     {

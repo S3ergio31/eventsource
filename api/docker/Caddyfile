@@ -7,8 +7,8 @@
 		# Modo clasico (sin worker): FrankenPHP atiende cada peticion en un hilo
 		# propio. Como una conexion SSE ocupa su hilo durante toda su vida, este
 		# numero es literalmente el techo de streams simultaneos que soporta el
-		# contenedor. Es el limite del que habla el README: escalar esto a miles
-		# es lo que obliga a sacar el borde SSE de PHP.
+		# contenedor para el driver 'sse' (ver «Límites» en el README). El hub
+		# Mercure de abajo no consume estos hilos.
 		num_threads 64
 	}
 }

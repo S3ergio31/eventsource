@@ -10,7 +10,7 @@ import { AuthService } from './auth.service';
     <main class="shell">
       <form class="card" (submit)="submit($event)">
         <h1>Entrar</h1>
-        <p class="lede">Maqueta de driver SSE para Laravel Broadcasting.</p>
+        <p class="lede">Evaluación de drivers de Laravel Broadcasting: SSE, API Gateway y Mercure.</p>
 
         <label>
           Email

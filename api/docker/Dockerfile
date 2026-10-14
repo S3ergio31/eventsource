@@ -13,7 +13,7 @@ RUN chmod +x /usr/local/bin/demo-entrypoint
 WORKDIR /app
 
 # El codigo se monta con un bind mount desde docker-compose, asi que no lo
-# copiamos: es una maqueta y se espera editarla en caliente.
+# copiamos: es un entorno de evaluacion y se espera editarlo en caliente.
 
 EXPOSE 8000
 

@@ -1,8 +1,11 @@
 # Diagramas de los drivers de broadcasting
 
-Este repo tiene tres drivers custom de broadcasting de Laravel. Los tres corren
+Este repo evalúa tres drivers custom de broadcasting de Laravel para decidir
+cuál adopta la empresa; la comparación y la recomendación están en
+[Evaluación y decisión](../README.md#evaluación-y-decisión). Los tres corren
 **a la vez**: un mismo `UserNotification` sale por todos los drivers listados en
-`BROADCAST_FANOUT` (por defecto `sse,apigateway,mercure`).
+`BROADCAST_FANOUT` (por defecto `sse,apigateway,mercure`), así se comparan sobre
+el mismo evento.
 
 | Driver | Quién sostiene la conexión | Estado / historial | Diagramas |
 |---|---|---|---|

@@ -8,15 +8,16 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 
 /**
- * Un evento de Laravel completamente normal. No sabe que existe SSE: declara su
- * canal privado y el driver configurado se encarga del transporte.
+ * Un evento de Laravel completamente normal. No sabe que transporte lo lleva:
+ * declara su canal privado y el driver configurado se encarga del resto.
  *
  * ShouldBroadcastNow (en lugar de ShouldBroadcast) lo emite de forma sincrona,
- * asi la maqueta no necesita un worker de colas.
+ * asi la evaluacion no necesita un worker de colas.
  *
  * broadcastConnections() lo manda por varios drivers a la vez (por defecto
- * 'sse' y 'apigateway'). Laravel arma el payload una sola vez y se lo pasa a
- * cada driver, asi que 'sentAt' es identico en ambos y la latencia se compara.
+ * los tres candidatos: 'sse', 'apigateway' y 'mercure'). Laravel arma el
+ * payload una sola vez y se lo pasa a cada driver, asi que 'sentAt' es
+ * identico en todos y la latencia se compara en igualdad.
  */
 class UserNotification implements ShouldBroadcastNow
 {

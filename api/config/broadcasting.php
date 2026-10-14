@@ -4,14 +4,16 @@ return [
 
     'default' => env('BROADCAST_CONNECTION', 'sse'),
 
-    // Conexiones por las que sale UserNotification. Con las tres, un mismo
-    // demo:notify llega por SSE, API Gateway y Mercure para compararlos.
+    // Conexiones por las que sale UserNotification. Con los tres drivers
+    // candidatos, un mismo demo:notify llega por SSE, API Gateway y Mercure y
+    // se comparan sobre el mismo evento. En produccion quedaria solo el elegido.
     'fanout' => array_values(array_filter(explode(',', env('BROADCAST_FANOUT', 'sse,apigateway,mercure')))),
 
     'connections' => [
 
-        // Nuestro driver custom. El nombre 'sse' del campo driver es el que
-        // registramos con Broadcast::extend() en BroadcastServiceProvider.
+        // Driver custom 'sse': Laravel sostiene el stream SSE y el estado vive
+        // en Redis Streams. El nombre del campo driver es el que registramos
+        // con Broadcast::extend() en BroadcastServiceProvider.
         'sse' => [
             'driver' => 'sse',
 
@@ -29,8 +31,8 @@ return [
             'retain' => (int) env('SSE_STREAM_RETAIN', 100),
         ],
 
-        // Segundo driver custom, en paralelo al de SSE: los WebSockets los
-        // sostiene API Gateway y el estado vive en DynamoDB, sin Redis.
+        // Driver custom 'apigateway': los WebSockets los sostiene API Gateway
+        // y el estado vive en DynamoDB, sin Redis.
         // Registrado con Broadcast::extend('apigateway') en BroadcastServiceProvider.
         'apigateway' => [
             'driver' => 'apigateway',
@@ -56,7 +58,7 @@ return [
             'events_ttl' => (int) env('WS_EVENTS_TTL', 86400),
         ],
 
-        // Tercer driver custom: el hub Mercure integrado en FrankenPHP sostiene
+        // Driver custom 'mercure': el hub Mercure integrado en FrankenPHP sostiene
         // las conexiones SSE y Laravel solo publica. Ver docker/Caddyfile.
         // Registrado con Broadcast::extend('mercure') en BroadcastServiceProvider.
         'mercure' => [

@@ -13,8 +13,9 @@ export interface Notification {
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'retrying' | 'error';
 
 /**
- * Lo que la home necesita de un transporte. SseService y WsService lo
- * implementan igual, asi se muestran lado a lado con el mismo componente.
+ * Lo que la home necesita de un transporte. SseService, WsService y
+ * MercureService (uno por driver candidato) lo implementan igual, asi se
+ * muestran lado a lado con el mismo componente.
  */
 export interface Transport {
   readonly state: Signal<ConnectionState>;

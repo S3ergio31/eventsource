@@ -62,12 +62,15 @@ class BroadcastServiceProvider extends ServiceProvider
     }
 
     /**
-     * Aca se engancha el driver custom a la libreria de broadcasting de Laravel.
-     * Despues de esto, 'sse' es un driver valido en config/broadcasting.php y
-     * broadcast(new UnEvento) lo usa sin que el resto de la app cambie.
+     * Aca se enganchan los tres drivers candidatos ('sse', 'apigateway' y
+     * 'mercure') a la libreria de broadcasting de Laravel. Despues de esto son
+     * drivers validos en config/broadcasting.php y broadcast(new UnEvento) los
+     * usa sin que el resto de la app cambie: elegir uno es solo configuracion.
      */
     public function boot(): void
     {
+        // Driver 'sse': Laravel sostiene el stream (SseController) y el estado
+        // vive en Redis Streams. Ver config/broadcasting.php.
         Broadcast::extend('sse', function ($app, array $config) {
             return new SseBroadcaster(
                 redis: $app->make(RedisFactory::class),
@@ -97,8 +100,8 @@ class BroadcastServiceProvider extends ServiceProvider
             return $broadcaster;
         };
 
-        // Segundo driver, en paralelo: los sockets los sostiene API Gateway y
-        // el estado vive en DynamoDB. Ver config/broadcasting.php.
+        // Driver 'apigateway': los sockets los sostiene API Gateway y el estado
+        // vive en DynamoDB. Ver config/broadcasting.php.
         Broadcast::extend('apigateway', function ($app, array $config) use ($inheritChannels) {
             return $inheritChannels(new ApiGatewayBroadcaster(
                 store: $app->make(ConnectionStore::class),
@@ -106,7 +109,7 @@ class BroadcastServiceProvider extends ServiceProvider
             ), 'apigateway');
         });
 
-        // Tercer driver: el hub Mercure que trae FrankenPHP sostiene las
+        // Driver 'mercure': el hub Mercure que trae FrankenPHP sostiene las
         // conexiones SSE; Laravel solo publica. Ver docker/Caddyfile.
         Broadcast::extend('mercure', function ($app, array $config) use ($inheritChannels) {
             return $inheritChannels(new MercureBroadcaster(

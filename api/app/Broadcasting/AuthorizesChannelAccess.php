@@ -8,8 +8,8 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
  * Autorizacion de canales con los callbacks de routes/channels.php, para
  * drivers que extienden Broadcaster y usan UsePusherChannelConventions.
  *
- * Es el mismo codigo que SseBroadcaster tiene inline; se saco a un trait para
- * el driver de API Gateway sin tocar el driver SSE.
+ * Es el mismo codigo que SseBroadcaster tiene inline, extraido a un trait para
+ * que los drivers 'apigateway' y 'mercure' autoricen exactamente igual.
  */
 trait AuthorizesChannelAccess
 {

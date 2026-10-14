@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  Transporte 'apigateway' del demo eventsource: WebSocket API de API Gateway
+  Driver candidato 'apigateway' de la evaluacion eventsource: WebSocket API de API Gateway
   que llama a Laravel por HTTP, tres tablas DynamoDB y la politica IAM que
   necesita Laravel. Laravel no se despliega aca: se indica su URL publica.
 
