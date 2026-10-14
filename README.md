@@ -62,7 +62,12 @@ Usuarios sembrados, ambos con contraseña `password`:
 ## Probar
 
 Entra con `ana@example.com`. La home abre los tres transportes lado a lado (SSE,
-API Gateway y Mercure) y todos quedan en «en vivo». Después, desde otra terminal:
+API Gateway y Mercure) y todos quedan en «en vivo». Cada columna lleva un log
+con los pasos de su conexión (autorización, apertura, suscripción, reposición):
+
+![Los tres transportes en vivo, cada uno con su log de conexión](docs/img/demo.png)
+
+Después, desde otra terminal:
 
 ```bash
 # 1. El evento aparece en las tres columnas al instante
