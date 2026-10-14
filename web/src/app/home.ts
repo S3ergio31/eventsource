@@ -143,6 +143,7 @@ export class HomePage implements OnInit, OnDestroy {
     for (const transport of [this.sse, this.ws, this.mercure]) {
       transport.disconnect();
       transport.clear();
+      transport.log.clear();
     }
     this.auth.logout();
     void this.router.navigate(['/login']);

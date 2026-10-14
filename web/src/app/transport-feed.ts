@@ -1,5 +1,5 @@
-import { Component, computed, input } from '@angular/core';
-import { Notification, Transport } from './transport';
+import { Component, ElementRef, afterRenderEffect, computed, input, viewChild } from '@angular/core';
+import { LogLevel, Notification, Transport } from './transport';
 
 /**
  * Una columna de la home: estado y eventos de un transporte. El mismo
@@ -55,6 +55,25 @@ import { Notification, Transport } from './transport';
           }
         </ul>
       }
+
+      <div class="feed-head">
+        <p class="count">Log · {{ transport().log.entries().length }} entradas</p>
+        @if (transport().log.entries().length) {
+          <button type="button" class="ghost" (click)="transport().log.clear()">Limpiar</button>
+        }
+      </div>
+
+      <ol #logBox class="log" (scroll)="onLogScroll()">
+        @for (entry of transport().log.entries(); track $index) {
+          <li [attr.data-level]="entry.level">
+            <time>{{ time(entry.at) }}</time>
+            <span class="icon">{{ icons[entry.level] }}</span>
+            <span class="text">{{ entry.text }}</span>
+          </li>
+        } @empty {
+          <li class="none">Sin actividad.</li>
+        }
+      </ol>
     </section>
   `,
   styles: `
@@ -115,18 +134,20 @@ import { Notification, Transport } from './transport';
     ul {
       display: grid;
       gap: 8px;
+      max-height: 360px;
       margin: 0;
       padding: 0;
+      overflow-y: auto;
       list-style: none;
     }
-    li {
+    ul > li {
       padding: 12px 14px;
       border: 1px solid var(--line);
       border-left: 2px solid var(--good);
       border-radius: 6px;
       background: var(--panel);
     }
-    li.replayed {
+    ul > li.replayed {
       border-left-color: var(--warn);
     }
     .msg {
@@ -165,6 +186,51 @@ import { Notification, Transport } from './transport';
       background: color-mix(in srgb, var(--warn) 15%, transparent);
       color: var(--warn);
       font-size: 12px;
+    }
+    .log {
+      height: 240px;
+      margin: 0;
+      padding: 8px 10px;
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      list-style: none;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    .log li {
+      display: grid;
+      grid-template-columns: auto 1ch 1fr;
+      gap: 8px;
+      color: var(--dim);
+    }
+    .log time {
+      font-variant-numeric: tabular-nums;
+      opacity: 0.7;
+    }
+    .log .text {
+      overflow-wrap: anywhere;
+    }
+    .log li[data-level='ok'] .icon,
+    .log li[data-level='ok'] .text {
+      color: var(--good);
+    }
+    .log li[data-level='warn'] .icon,
+    .log li[data-level='warn'] .text {
+      color: var(--warn);
+    }
+    .log li[data-level='error'] .icon,
+    .log li[data-level='error'] .text {
+      color: var(--bad);
+    }
+    .log li[data-level='event'] .icon,
+    .log li[data-level='event'] .text {
+      color: var(--ink);
+    }
+    .log li.none {
+      display: block;
     }
     .ghost {
       padding: 5px 10px;
@@ -207,6 +273,40 @@ export class TransportFeed {
 
     return Math.round(live.reduce((sum, event) => sum + this.latency(event), 0) / live.length);
   });
+
+  readonly icons: Record<LogLevel, string> = {
+    info: '·',
+    ok: '✓',
+    warn: '!',
+    error: '✗',
+    event: '↓',
+  };
+
+  private readonly logBox = viewChild.required<ElementRef<HTMLElement>>('logBox');
+  /** Solo se sigue el final si el usuario no subio a leer algo anterior. */
+  private stickToBottom = true;
+
+  constructor() {
+    // Despues del render, para que el scrollHeight incluya la entrada nueva.
+    afterRenderEffect(() => {
+      this.transport().log.entries();
+      if (!this.stickToBottom) return;
+
+      const box = this.logBox().nativeElement;
+      box.scrollTop = box.scrollHeight;
+    });
+  }
+
+  onLogScroll(): void {
+    const box = this.logBox().nativeElement;
+    this.stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 8;
+  }
+
+  time(at: number): string {
+    const date = new Date(at);
+    const pad = (value: number, size = 2) => String(value).padStart(size, '0');
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+  }
 
   /**
    * Reloj del navegador menos reloj del servidor: incluye el desfase entre

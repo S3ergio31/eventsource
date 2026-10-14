@@ -1,7 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 import { EventSourceMessage, fetchEventSource } from '@microsoft/fetch-event-source';
 import { API_BASE } from './api.config';
-import { ConnectionState, Notification, Transport } from './transport';
+import { ConnectionState, Notification, Transport, TransportLog } from './transport';
 
 /**
  * Error que NO debe reintentarse (401, 403, 400). Si lo relanzamos desde
@@ -26,6 +26,7 @@ export class SseService implements Transport {
   readonly events = signal<Notification[]>([]);
   readonly lastError = signal<string | null>(null);
   readonly resumedFrom = signal<string | null>(null);
+  readonly log = new TransportLog();
 
   private controller?: AbortController;
 
@@ -38,7 +39,10 @@ export class SseService implements Transport {
     this.state.set('connecting');
     this.lastError.set(null);
 
-    void fetchEventSource(`${API_BASE}/sse?channel=${encodeURIComponent(channel)}`, {
+    const url = `${API_BASE}/sse?channel=${encodeURIComponent(channel)}`;
+    this.log.info(`GET /sse?channel=${channel} con Authorization: Bearer <jwt>`);
+
+    void fetchEventSource(url, {
       signal: controller.signal,
       // El JWT va en el header, que es el motivo de usar esta libreria.
       headers: { Authorization: `Bearer ${token}` },
@@ -51,6 +55,7 @@ export class SseService implements Transport {
 
         if (response.ok && contentType.includes('text/event-stream')) {
           this.state.set('open');
+          this.log.ok(`${response.status} text/event-stream: stream abierto`);
           return;
         }
 
@@ -73,13 +78,16 @@ export class SseService implements Transport {
         if (error instanceof FatalError) {
           this.state.set('error');
           this.lastError.set(error.message);
+          this.log.error(`${error.message} Sin reintentos.`);
           throw error; // corta los reintentos
         }
 
         // Cualquier otra cosa se reintenta. Devolver undefined deja que la
         // libreria espere el intervalo del campo "retry:" que mando el server.
+        const message = error instanceof Error ? error.message : String(error);
         this.state.set('retrying');
-        this.lastError.set(error instanceof Error ? error.message : String(error));
+        this.lastError.set(message);
+        this.log.warn(`${message} La libreria reconecta con Last-Event-ID tras el "retry:" del server.`);
         return undefined;
       },
     }).catch(() => {
@@ -88,6 +96,7 @@ export class SseService implements Transport {
   }
 
   disconnect(): void {
+    if (this.controller) this.log.info('Desconectado por el cliente.');
     this.controller?.abort();
     this.controller = undefined;
     this.state.set('idle');
@@ -109,11 +118,13 @@ export class SseService implements Transport {
         const payload = JSON.parse(event.data) as { resumedFrom: string };
         this.state.set('open');
         this.resumedFrom.set(payload.resumedFrom);
+        this.log.ok(`sse:connected, leyendo el Redis Stream desde ${payload.resumedFrom}`);
         break;
       }
 
       case 'sse:reconnect':
         this.state.set('retrying');
+        this.log.warn('sse:reconnect: el servidor pide reconectar.');
         break;
 
       case 'notification': {
@@ -125,6 +136,7 @@ export class SseService implements Transport {
           receivedAt: Date.now(),
         };
         this.events.update((list) => [notification, ...list].slice(0, 50));
+        this.log.event(`notification id ${notification.id}`);
         break;
       }
     }

@@ -3,7 +3,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { EventSourceMessage, fetchEventSource } from '@microsoft/fetch-event-source';
 import { firstValueFrom } from 'rxjs';
 import { API_BASE } from './api.config';
-import { ConnectionState, Notification, Transport } from './transport';
+import { ConnectionState, Notification, Transport, TransportLog } from './transport';
 
 interface MercureToken {
   token: string;
@@ -43,6 +43,7 @@ export class MercureService implements Transport {
   readonly events = signal<Notification[]>([]);
   readonly lastError = signal<string | null>(null);
   readonly resumedFrom = signal<string | null>(null);
+  readonly log = new TransportLog();
 
   private controller?: AbortController;
   private renewTimer?: ReturnType<typeof setTimeout>;
@@ -69,6 +70,7 @@ export class MercureService implements Transport {
   }
 
   disconnect(): void {
+    if (this.controller) this.log.info('Desconectado por el cliente.');
     clearTimeout(this.renewTimer);
     this.controller?.abort();
     this.controller = undefined;
@@ -85,6 +87,7 @@ export class MercureService implements Transport {
 
     let subscription: MercureToken;
     try {
+      this.log.info('POST /mercure/token: Laravel autoriza el canal y firma el JWT de suscriptor');
       subscription = await this.fetchToken();
     } catch (error) {
       this.fail(error);
@@ -93,8 +96,11 @@ export class MercureService implements Transport {
 
     if (controller.signal.aborted) return;
 
+    this.log.ok(`Token obtenido para ${subscription.topic} (desfase de reloj ${Math.round(this.clockOffset)} ms)`);
+
     const lastId = this.loadLastId();
     const url = `${subscription.hub_url}?topic=${encodeURIComponent(subscription.topic)}`;
+    this.log.info(`GET ${new URL(subscription.hub_url, location.href).pathname}?topic=…, Last-Event-ID ${lastId ?? '(ninguno)'}`);
 
     void fetchEventSource(url, {
       signal: controller.signal,
@@ -114,6 +120,7 @@ export class MercureService implements Transport {
           this.state.set('open');
           this.lastError.set(null);
           this.resumedFrom.set(this.loadLastId() ?? '(nuevo)');
+          this.log.ok(`${response.status} text/event-stream: suscripto al hub`);
           return;
         }
 
@@ -135,8 +142,10 @@ export class MercureService implements Transport {
           throw error; // corta la libreria; open() pide un token nuevo
         }
 
+        const message = error instanceof Error ? error.message : String(error);
         this.state.set('retrying');
-        this.lastError.set(error instanceof Error ? error.message : String(error));
+        this.lastError.set(message);
+        this.log.warn(`${message} La libreria reconecta con Last-Event-ID.`);
         return undefined;
       },
     }).catch((error: unknown) => {
@@ -182,23 +191,29 @@ export class MercureService implements Transport {
       receivedAt: Date.now(),
       replayed: Date.parse(payload.sentAt) < this.openedAtServer,
     };
-    this.events.update((list) =>
-      list.some((item) => item.id === notification.id)
-        ? list
-        : [notification, ...list].slice(0, 50),
-    );
+
+    if (this.events().some((item) => item.id === notification.id)) {
+      this.log.info(`Duplicado ignorado: id ${notification.id}`);
+      return;
+    }
+
+    this.events.update((list) => [notification, ...list].slice(0, 50));
+    this.log.event(`notification id ${notification.id}${notification.replayed ? ' (repuesto)' : ''}`);
   }
 
   private fail(error: unknown): void {
     if (error instanceof FatalError) {
       this.state.set('error');
       this.lastError.set(error.message);
+      this.log.error(`${error.message} Sin reintentos.`);
       return;
     }
 
     // Token vencido o error de red al pedirlo: se reintenta con uno nuevo.
+    const message = error instanceof Error ? error.message : String(error);
     this.state.set('retrying');
-    this.lastError.set(error instanceof Error ? error.message : String(error));
+    this.lastError.set(message);
+    this.log.warn(`${message} Pidiendo token nuevo en ${RENEW_DELAY_MS} ms.`);
     clearTimeout(this.renewTimer);
     this.renewTimer = setTimeout(() => void this.open(), RENEW_DELAY_MS);
   }

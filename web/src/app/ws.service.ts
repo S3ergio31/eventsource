@@ -2,7 +2,7 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { API_BASE, WS_URL } from './api.config';
-import { ConnectionState, Notification, Transport } from './transport';
+import { ConnectionState, Notification, Transport, TransportLog } from './transport';
 
 /** Mensajes que manda Laravel por el socket (via PostToConnection). */
 type ServerMessage =
@@ -41,6 +41,7 @@ export class WsService implements Transport {
   readonly events = signal<Notification[]>([]);
   readonly lastError = signal<string | null>(null);
   readonly resumedFrom = signal<string | null>(null);
+  readonly log = new TransportLog();
 
   private socket?: WebSocket;
   private token = '';
@@ -65,6 +66,7 @@ export class WsService implements Transport {
   }
 
   disconnect(): void {
+    if (this.active) this.log.info('Desconectado por el cliente (close 1000).');
     this.active = false;
     clearTimeout(this.retryTimer);
     this.stopPing();
@@ -79,9 +81,11 @@ export class WsService implements Transport {
 
   private async open(): Promise<void> {
     this.state.set(this.attempt === 0 ? 'connecting' : 'retrying');
+    if (this.attempt > 0) this.log.info(`Reintento #${this.attempt}`);
 
     let ticket: string;
     try {
+      this.log.info('POST /ws/ticket: canjea el JWT por un ticket corto');
       ticket = await this.fetchTicket();
     } catch (error) {
       this.fail(error);
@@ -90,13 +94,17 @@ export class WsService implements Transport {
 
     if (!this.active) return;
 
+    this.log.ok('Ticket obtenido');
+    this.log.info('Abriendo WebSocket con ?ticket=… ($connect)');
+
     const socket = new WebSocket(`${WS_URL}?ticket=${encodeURIComponent(ticket)}`);
     this.socket = socket;
 
     socket.onopen = () => {
-      socket.send(
-        JSON.stringify({ action: 'subscribe', channel: this.channel, lastId: this.loadLastId() }),
-      );
+      const lastId = this.loadLastId();
+      this.log.ok('Socket abierto');
+      this.log.info(`→ subscribe ${this.channel}, lastId ${lastId ?? '(ninguno)'}`);
+      socket.send(JSON.stringify({ action: 'subscribe', channel: this.channel, lastId }));
       this.startPing(socket);
     };
 
@@ -111,7 +119,9 @@ export class WsService implements Transport {
 
       // API Gateway no expone el status de un $connect rechazado: el
       // navegador solo ve un cierre 1006. Se reintenta con un ticket nuevo.
-      this.lastError.set(`Socket cerrado (${event.code}${event.reason ? `: ${event.reason}` : ''}).`);
+      const message = `Socket cerrado (${event.code}${event.reason ? `: ${event.reason}` : ''}).`;
+      this.lastError.set(message);
+      this.log.warn(message);
       this.scheduleReconnect();
     };
   }
@@ -141,6 +151,9 @@ export class WsService implements Transport {
         this.state.set('open');
         this.lastError.set(null);
         this.resumedFrom.set(message.resumedFrom ?? '(nuevo)');
+        this.log.ok(
+          `subscribed: desde ${message.resumedFrom ?? '(nuevo)'}, ${message.replayed} repuestos, cursor ${message.cursor}`,
+        );
         // Sin lastId previo, el cursor del servidor marca "desde aca": si el
         // socket se corta antes del primer evento, no se pierde lo del hueco.
         if (!this.loadLastId()) this.saveLastId(message.cursor);
@@ -151,10 +164,17 @@ export class WsService implements Transport {
         break;
 
       case 'event': {
-        if (this.seen.has(message.id)) return;
+        if (this.seen.has(message.id)) {
+          this.log.info(`Duplicado ignorado: id ${message.id}`);
+          return;
+        }
         this.seen.add(message.id);
 
         this.saveLastId(message.id);
+
+        // Llego antes del ack de la suscripcion: es reposicion, no vivo.
+        const replayed = this.state() !== 'open';
+        this.log.event(`${message.event} id ${message.id}${replayed ? ' (repuesto)' : ''}`);
 
         if (message.event !== 'notification') return;
 
@@ -163,8 +183,7 @@ export class WsService implements Transport {
           message: message.data.message,
           sentAt: message.data.sentAt,
           receivedAt: Date.now(),
-          // Llego antes del ack de la suscripcion: es reposicion, no vivo.
-          replayed: this.state() !== 'open',
+          replayed,
         };
         this.events.update((list) => [notification, ...list].slice(0, 50));
         break;
@@ -180,10 +199,13 @@ export class WsService implements Transport {
       this.socket?.close(1000, 'fatal');
       this.state.set('error');
       this.lastError.set(error.message);
+      this.log.error(`${error.message} Sin reintentos.`);
       return;
     }
 
-    this.lastError.set(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    this.lastError.set(message);
+    this.log.warn(message);
     this.scheduleReconnect();
   }
 
@@ -193,6 +215,7 @@ export class WsService implements Transport {
     this.state.set('retrying');
     const delay = Math.min(1000 * 2 ** this.attempt, MAX_BACKOFF_MS) + Math.random() * 500;
     this.attempt++;
+    this.log.warn(`Reconectando en ${Math.round(delay)} ms (backoff, intento ${this.attempt})`);
 
     clearTimeout(this.retryTimer);
     this.retryTimer = setTimeout(() => void this.open(), delay);
@@ -203,6 +226,7 @@ export class WsService implements Transport {
     this.pingTimer = setInterval(() => {
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ action: 'ping' }));
+        this.log.info('→ ping (evita el corte por idle de API Gateway)');
       }
     }, PING_MS);
   }
