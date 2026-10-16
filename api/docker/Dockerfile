@@ -1,4 +1,6 @@
-FROM dunglas/frankenphp:php8.4
+# 1.13 es la primera que trae Mercure 1.0: el driver mercure nativo de Laravel
+# y Laravel Echo hablan ese protocolo (match, authorization_details, issuer).
+FROM dunglas/frankenphp:1.13.0-php8.4
 
 # pdo_sqlite ya viene en la imagen. Agregamos phpredis (el XADD/XREAD), opcache y zip (para composer).
 RUN install-php-extensions redis opcache zip

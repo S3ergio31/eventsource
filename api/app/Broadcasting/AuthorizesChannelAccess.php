@@ -9,7 +9,8 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
  * drivers que extienden Broadcaster y usan UsePusherChannelConventions.
  *
  * Es el mismo codigo que SseBroadcaster tiene inline, extraido a un trait para
- * que los drivers 'apigateway' y 'mercure' autoricen exactamente igual.
+ * que el driver 'apigateway' autorice exactamente igual. El driver 'mercure'
+ * es el nativo de Laravel y trae su propio auth().
  */
 trait AuthorizesChannelAccess
 {

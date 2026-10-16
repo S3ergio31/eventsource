@@ -33,14 +33,27 @@
 				size 1000
 			}
 
-			# Claves HS256 de los JWT. Laravel firma con las mismas (ver
+			# Emisor de confianza (Mercure 1.0): el hub solo acepta tokens cuyo
+			# claim iss sea este valor, y los valida con sus claves HS256.
+			# Laravel firma con las mismas y el mismo iss (ver
 			# config/broadcasting.php); vienen del environment del contenedor
 			# y se sustituyen al cargar el Caddyfile ({$VAR}).
-			publisher_jwt {$MERCURE_PUBLISHER_JWT_KEY} HS256
-			subscriber_jwt {$MERCURE_SUBSCRIBER_JWT_KEY} HS256
+			issuer {$MERCURE_ISSUER:http://localhost:8000} {
+				publisher {
+					jwt {$MERCURE_PUBLISHER_JWT_KEY} HS256
+				}
+				subscriber {
+					jwt {$MERCURE_SUBSCRIBER_JWT_KEY} HS256
+				}
+			}
 
 			# El navegador se suscribe desde el dev server de Angular.
 			cors_origins {$MERCURE_CORS_ORIGINS:http://localhost:4200}
+
+			# Cookie donde Laravel deja el JWT de suscriptor (POST
+			# /api/broadcasting/mercure/auth). Mismo nombre que cookie_name en
+			# config/broadcasting.php; sin prefijo __Secure- porque es HTTP.
+			cookie_name {$MERCURE_COOKIE_NAME:mercureAuthorization}
 
 			# Sin `anonymous`: no se puede suscribir nadie sin JWT, y las
 			# publicaciones privadas solo llegan a quien tenga el topic.

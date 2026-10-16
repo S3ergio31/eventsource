@@ -1,79 +1,84 @@
-import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { Injectable, inject, signal } from '@angular/core';
-import { EventSourceMessage, fetchEventSource } from '@microsoft/fetch-event-source';
-import { firstValueFrom } from 'rxjs';
-import { API_BASE } from './api.config';
+import { Injectable, signal } from '@angular/core';
+import Echo, { type ConnectionStatus } from 'laravel-echo';
+import { API_BASE, MERCURE_HUB_URL } from './api.config';
 import { ConnectionState, Notification, Transport, TransportLog } from './transport';
 
-interface MercureToken {
-  token: string;
-  hub_url: string;
-  topic: string;
-  server_time: number;
-}
-
-/** Error que NO debe reintentarse (Laravel nego el canal o la sesion). */
-class FatalError extends Error {}
-
-/** El hub rechazo el JWT de suscriptor (vencido): hay que pedir otro. */
-class TokenRejected extends Error {}
-
-const LAST_ID_KEY = 'mercure-last-id:';
-const RENEW_DELAY_MS = 1000;
-
 /**
- * Cliente del transporte Mercure. Es SSE, igual que SseService, y usa la misma
- * libreria; lo que cambia es contra quien habla:
+ * Cliente del transporte Mercure: Laravel Echo con el broadcaster 'mercure',
+ * contra el driver nativo de Laravel. A diferencia de SseService y WsService
+ * aca no hay protocolo propio, todo lo hace Echo:
  *
- *  1. Canjea el JWT de sesion por un JWT de suscriptor del hub
- *     (POST /mercure/token). Ahi Laravel corre routes/channels.php.
- *  2. Se suscribe al hub (/.well-known/mercure?topic=...) con ese JWT. El hub
- *     es Go dentro de FrankenPHP: Laravel ya no sostiene la conexion.
- *  3. Las reconexiones las maneja la libreria con Last-Event-ID, y el hub
- *     repone desde su historial. Si el JWT vence (401 del hub), se pide uno
- *     nuevo y se sigue desde el ultimo id.
+ *  1. POST /broadcasting/mercure/auth con { channel_names } y el Bearer de
+ *     sesion. Laravel corre routes/channels.php y responde con una cookie
+ *     HttpOnly que lleva el JWT de suscriptor (JavaScript nunca lo ve).
+ *  2. EventSource nativo contra el hub (/.well-known/mercure?match=...), con
+ *     withCredentials para que el navegador mande esa cookie.
+ *  3. Re-autentica solo antes de que venza la cookie y reconecta con backoff,
+ *     mandando last_event_id.
  *
- * El ultimo id se guarda en localStorage, asi la reposicion sobrevive a un F5.
+ * Lo que se pierde frente al driver propio anterior: Echo guarda el ultimo id
+ * solo en memoria (tras un F5 no hay reposicion) y no expone el id del evento
+ * a los listeners.
  */
 @Injectable({ providedIn: 'root' })
 export class MercureService implements Transport {
-  private readonly http = inject(HttpClient);
-
   readonly state = signal<ConnectionState>('idle');
   readonly events = signal<Notification[]>([]);
   readonly lastError = signal<string | null>(null);
   readonly resumedFrom = signal<string | null>(null);
   readonly log = new TransportLog();
 
-  private controller?: AbortController;
-  private renewTimer?: ReturnType<typeof setTimeout>;
-  private token = '';
-  private channel = '';
+  private echo?: Echo<'mercure'>;
+  private stopStatus?: () => void;
   /**
-   * Inicio de esta conexion, en el reloj del servidor: un evento con sentAt
-   * anterior solo puede ser reposicion. Se compara en el reloj del servidor
-   * porque el de la VM de Docker puede ir segundos desfasado del navegador.
+   * Ultima vez que el stream quedo conectado: un evento con sentAt anterior
+   * solo puede ser reposicion. Es el reloj del navegador; Echo no da una
+   * respuesta de la que sacar el del servidor.
    */
-  private openedAtServer = 0;
-  /** Reloj del servidor menos reloj del navegador, estimado al pedir el token. */
-  private clockOffset = 0;
+  private openedAt = 0;
 
   connect(token: string, channel: string): void {
     this.disconnect();
 
-    this.token = token;
-    this.channel = channel;
     this.lastError.set(null);
     this.state.set('connecting');
+    // Echo no expone el cursor; lo que si se sabe es donde vive.
+    this.resumedFrom.set('(Echo, en memoria)');
 
-    void this.open();
+    const echo = new Echo<'mercure'>({
+      broadcaster: 'mercure',
+      host: MERCURE_HUB_URL,
+      authEndpoint: `${API_BASE}/broadcasting/mercure/auth`,
+      auth: { headers: { Authorization: `Bearer ${token}` } },
+      withoutInterceptors: true,
+    });
+    this.echo = echo;
+
+    this.stopStatus = echo.connector.onConnectionChange((status) => this.handleStatus(status));
+
+    this.log.info(`Echo: POST /broadcasting/mercure/auth { channel_names: [${channel}] } con Bearer <jwt>`);
+
+    // Echo antepone "private-": el canal de la sesion ya lo trae.
+    echo
+      .private(channel.replace(/^private-/, ''))
+      .subscribed(() => this.log.ok(`Suscripto a ${channel}: cookie de suscriptor recibida`))
+      .listen('.notification', (payload: { message: string; sentAt: string }) => this.handleNotification(payload))
+      .error((error: unknown) => {
+        // Canal denegado (denied en la respuesta) o auth rechazado (401/403):
+        // Echo saca el canal y no reintenta.
+        const message = error instanceof Error ? error.message : String(error);
+        this.state.set('error');
+        this.lastError.set(message);
+        this.log.error(message);
+      });
   }
 
   disconnect(): void {
-    if (this.controller) this.log.info('Desconectado por el cliente.');
-    clearTimeout(this.renewTimer);
-    this.controller?.abort();
-    this.controller = undefined;
+    if (this.echo) this.log.info('Desconectado por el cliente.');
+    this.stopStatus?.();
+    this.stopStatus = undefined;
+    this.echo?.disconnect();
+    this.echo = undefined;
     this.state.set('idle');
   }
 
@@ -81,157 +86,49 @@ export class MercureService implements Transport {
     this.events.set([]);
   }
 
-  private async open(): Promise<void> {
-    const controller = new AbortController();
-    this.controller = controller;
+  private handleStatus(status: ConnectionStatus): void {
+    switch (status) {
+      case 'connecting':
+        this.state.set('connecting');
+        this.log.info('Echo: connecting');
+        break;
 
-    let subscription: MercureToken;
-    try {
-      this.log.info('POST /mercure/token: Laravel autoriza el canal y firma el JWT de suscriptor');
-      subscription = await this.fetchToken();
-    } catch (error) {
-      this.fail(error);
-      return;
-    }
+      case 'connected':
+        this.openedAt = Date.now();
+        this.state.set('open');
+        this.lastError.set(null);
+        this.log.ok('Echo: connected, EventSource abierto contra el hub');
+        break;
 
-    if (controller.signal.aborted) return;
-
-    this.log.ok(`Token obtenido para ${subscription.topic} (desfase de reloj ${Math.round(this.clockOffset)} ms)`);
-
-    const lastId = this.loadLastId();
-    const url = `${subscription.hub_url}?topic=${encodeURIComponent(subscription.topic)}`;
-    this.log.info(`GET ${new URL(subscription.hub_url, location.href).pathname}?topic=…, Last-Event-ID ${lastId ?? '(ninguno)'}`);
-
-    void fetchEventSource(url, {
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${subscription.token}`,
-        // En las reconexiones internas la libreria lo actualiza sola; este es
-        // el de arranque (F5 o token renovado).
-        ...(lastId ? { 'Last-Event-ID': lastId } : {}),
-      },
-      openWhenHidden: true,
-
-      onopen: async (response) => {
-        const contentType = response.headers.get('content-type') ?? '';
-
-        if (response.ok && contentType.includes('text/event-stream')) {
-          this.openedAtServer = Date.now() + this.clockOffset;
-          this.state.set('open');
-          this.lastError.set(null);
-          this.resumedFrom.set(this.loadLastId() ?? '(nuevo)');
-          this.log.ok(`${response.status} text/event-stream: suscripto al hub`);
-          return;
-        }
-
-        if (response.status === 401) {
-          throw new TokenRejected('El hub rechazo el JWT de suscriptor (401).');
-        }
-
-        throw new Error(`Respuesta inesperada del hub (${response.status}).`);
-      },
-
-      onmessage: (event) => this.handleMessage(event),
-
-      onclose: () => {
-        throw new Error('El hub cerro el stream.');
-      },
-
-      onerror: (error) => {
-        if (error instanceof TokenRejected) {
-          throw error; // corta la libreria; open() pide un token nuevo
-        }
-
-        const message = error instanceof Error ? error.message : String(error);
+      case 'reconnecting':
         this.state.set('retrying');
-        this.lastError.set(message);
-        this.log.warn(`${message} La libreria reconecta con Last-Event-ID.`);
-        return undefined;
-      },
-    }).catch((error: unknown) => {
-      if (controller.signal.aborted) return;
-      this.fail(error);
-    });
-  }
+        this.log.warn('Echo: reconnecting, con backoff y last_event_id');
+        break;
 
-  private async fetchToken(): Promise<MercureToken> {
-    try {
-      const requestedAt = Date.now();
-      const response = await firstValueFrom(
-        this.http.post<MercureToken>(
-          `${API_BASE}/mercure/token`,
-          { channel: this.channel },
-          { headers: { Authorization: `Bearer ${this.token}` } },
-        ),
-      );
-      // El servidor leyo su reloj a mitad del viaje (aprox.).
-      this.clockOffset = response.server_time - (requestedAt + Date.now()) / 2;
-      return response;
-    } catch (error) {
-      if (error instanceof HttpErrorResponse && [400, 401, 403].includes(error.status)) {
-        throw new FatalError(`Laravel rechazo la suscripcion (${error.status}).`);
-      }
-      throw error;
+      case 'failed':
+        this.state.set('error');
+        this.log.error('Echo: failed');
+        break;
+
+      case 'disconnected':
+        // Tras un canal denegado Echo queda en disconnected: no pisar el error.
+        if (this.state() !== 'error') this.state.set('idle');
+        this.log.info('Echo: disconnected');
+        break;
     }
   }
 
-  private handleMessage(event: EventSourceMessage): void {
-    // Los heartbeats del hub son comentarios SSE y no llegan como mensajes.
-    if (!event.data || event.event !== 'notification') {
-      return;
-    }
-
-    if (event.id) this.saveLastId(event.id);
-
-    const payload = JSON.parse(event.data) as { message: string; sentAt: string };
+  private handleNotification(payload: { message: string; sentAt: string }): void {
     const notification: Notification = {
-      id: event.id || crypto.randomUUID(),
+      // El id SSE del hub no llega al listener.
+      id: crypto.randomUUID(),
       message: payload.message,
       sentAt: payload.sentAt,
       receivedAt: Date.now(),
-      replayed: Date.parse(payload.sentAt) < this.openedAtServer,
+      replayed: Date.parse(payload.sentAt) < this.openedAt,
     };
 
-    if (this.events().some((item) => item.id === notification.id)) {
-      this.log.info(`Duplicado ignorado: id ${notification.id}`);
-      return;
-    }
-
     this.events.update((list) => [notification, ...list].slice(0, 50));
-    this.log.event(`notification id ${notification.id}${notification.replayed ? ' (repuesto)' : ''}`);
-  }
-
-  private fail(error: unknown): void {
-    if (error instanceof FatalError) {
-      this.state.set('error');
-      this.lastError.set(error.message);
-      this.log.error(`${error.message} Sin reintentos.`);
-      return;
-    }
-
-    // Token vencido o error de red al pedirlo: se reintenta con uno nuevo.
-    const message = error instanceof Error ? error.message : String(error);
-    this.state.set('retrying');
-    this.lastError.set(message);
-    this.log.warn(`${message} Pidiendo token nuevo en ${RENEW_DELAY_MS} ms.`);
-    clearTimeout(this.renewTimer);
-    this.renewTimer = setTimeout(() => void this.open(), RENEW_DELAY_MS);
-  }
-
-  private loadLastId(): string | null {
-    try {
-      return localStorage.getItem(LAST_ID_KEY + this.channel);
-    } catch {
-      return null;
-    }
-  }
-
-  /** Los ids del hub (urn:uuid) no son ordenables: vale el ultimo recibido. */
-  private saveLastId(id: string): void {
-    try {
-      localStorage.setItem(LAST_ID_KEY + this.channel, id);
-    } catch {
-      // Sin storage, la reposicion solo cubre cortes sin recargar la pagina.
-    }
+    this.log.event(`notification${notification.replayed ? ' (repuesto)' : ''}`);
   }
 }

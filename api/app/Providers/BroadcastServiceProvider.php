@@ -4,25 +4,20 @@ namespace App\Providers;
 
 use App\Broadcasting\ApiGateway\ConnectionStore;
 use App\Broadcasting\ApiGatewayBroadcaster;
-use App\Broadcasting\MercureBroadcaster;
 use App\Broadcasting\SseBroadcaster;
 use Aws\ApiGatewayManagementApi\ApiGatewayManagementApiClient;
 use Aws\DynamoDb\DynamoDbClient;
-use Firebase\JWT\JWT;
 use Illuminate\Broadcasting\Broadcasters\Broadcaster;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\ServiceProvider;
-use Symfony\Component\Mercure\Hub;
-use Symfony\Component\Mercure\HubInterface;
-use Symfony\Component\Mercure\Jwt\CallableTokenProvider;
 
 class BroadcastServiceProvider extends ServiceProvider
 {
     /**
-     * Las piezas de los drivers 'apigateway' y 'mercure' van al contenedor:
-     * el ConnectionStore tambien lo usan el WsGatewayController y
-     * ws:create-tables, y los tests reemplazan todas por dobles.
+     * Las piezas del driver 'apigateway' van al contenedor: el ConnectionStore
+     * tambien lo usan el WsGatewayController y ws:create-tables, y los tests
+     * las reemplazan por dobles.
      */
     public function register(): void
     {
@@ -44,21 +39,6 @@ class BroadcastServiceProvider extends ServiceProvider
                 self::awsOptions($config, $config['management_endpoint'])
             );
         });
-
-        $this->app->singleton(HubInterface::class, function ($app) {
-            $config = $app['config']['broadcasting.connections.mercure'];
-
-            // Laravel publica con un JWT propio de vida corta, firmado con la
-            // clave de publicador que el hub tiene en el Caddyfile.
-            return new Hub(
-                url: $config['hub_url'],
-                jwtProvider: new CallableTokenProvider(fn () => JWT::encode([
-                    'mercure' => ['publish' => ['*']],
-                    'exp' => time() + 60,
-                ], $config['publisher_key'], 'HS256')),
-                publicUrl: $config['public_url'],
-            );
-        });
     }
 
     /**
@@ -66,6 +46,11 @@ class BroadcastServiceProvider extends ServiceProvider
      * 'mercure') a la libreria de broadcasting de Laravel. Despues de esto son
      * drivers validos en config/broadcasting.php y broadcast(new UnEvento) los
      * usa sin que el resto de la app cambie: elegir uno es solo configuracion.
+     *
+     * Si 'mercure' quedara como driver unico, este provider entero sobra: los
+     * extend() y la herencia de canales existen solo porque conviven varios
+     * drivers. Alcanza con el driver nativo, BROADCAST_CONNECTION=mercure y
+     * withBroadcasting() en bootstrap/app.php.
      */
     public function boot(): void
     {
@@ -109,14 +94,15 @@ class BroadcastServiceProvider extends ServiceProvider
             ), 'apigateway');
         });
 
-        // Driver 'mercure': el hub Mercure que trae FrankenPHP sostiene las
-        // conexiones SSE; Laravel solo publica. Ver docker/Caddyfile.
+        // Driver 'mercure': el nativo de Laravel. El hub Mercure que trae
+        // FrankenPHP sostiene las conexiones SSE; Laravel solo publica. Ver
+        // docker/Caddyfile. Se pasa por extend() unicamente para heredar los
+        // canales: el closure queda vinculado al BroadcastManager, asi que
+        // $this->createMercureDriver() es el mismo creador que usaria el
+        // framework sin este extend. Con mercure como driver por defecto (o
+        // unico) este extend no hace nada y se puede borrar.
         Broadcast::extend('mercure', function ($app, array $config) use ($inheritChannels) {
-            return $inheritChannels(new MercureBroadcaster(
-                hub: $app->make(HubInterface::class),
-                subscriberKey: $config['subscriber_key'],
-                subscriberTtl: (int) ($config['subscriber_ttl'] ?? 3600),
-            ), 'mercure');
+            return $inheritChannels($this->createMercureDriver($config), 'mercure');
         });
     }
 

@@ -1,10 +1,11 @@
 <?php
 
 use App\Http\Controllers\AuthController;
-use App\Http\Controllers\MercureTokenController;
 use App\Http\Controllers\SseController;
 use App\Http\Controllers\WsGatewayController;
 use App\Http\Controllers\WsTicketController;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/login', [AuthController::class, 'login']);
@@ -18,8 +19,15 @@ Route::middleware('jwt')->group(function () {
     // Canje del JWT de sesion por un ticket corto para abrir el WebSocket.
     Route::post('/ws/ticket', WsTicketController::class);
 
-    // Canje del JWT de sesion por un JWT de suscriptor del hub Mercure.
-    Route::post('/mercure/token', MercureTokenController::class);
+    // authEndpoint de Laravel Echo para el driver mercure. Es el auth() nativo
+    // (corre routes/channels.php y responde con la cookie de suscriptor del
+    // hub). Va aparte de /broadcasting/auth porque ese usa el driver por
+    // defecto ('sse').
+    //
+    // Si 'mercure' quedara como driver unico, esta ruta sobra: el
+    // /api/broadcasting/auth de withBroadcasting() (bootstrap/app.php) ya
+    // usaria mercure, y el front apuntaria su authEndpoint ahi.
+    Route::post('/broadcasting/mercure/auth', fn (Request $request) => Broadcast::connection('mercure')->auth($request));
 });
 
 // Las llama API Gateway (o gateway-local), no el navegador.

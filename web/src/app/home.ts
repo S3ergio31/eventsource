@@ -44,7 +44,7 @@ import { WsService } from './ws.service';
         />
         <app-transport-feed
           title="Mercure"
-          subtitle="El hub Go de FrankenPHP sostiene el stream · Bolt"
+          subtitle="Driver nativo + Echo · hub Go de FrankenPHP · Bolt"
           [transport]="mercure"
         />
       </div>

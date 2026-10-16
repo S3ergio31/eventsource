@@ -8,100 +8,134 @@ use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Broadcast;
-use Symfony\Component\Mercure\HubInterface;
+use Illuminate\Testing\TestResponse;
 use Symfony\Component\Mercure\Jwt\StaticTokenProvider;
 use Symfony\Component\Mercure\MockHub;
 use Symfony\Component\Mercure\Update;
 use Tests\TestCase;
 
+/**
+ * El driver 'mercure' es el nativo de Laravel. Estos tests no prueban el
+ * framework: fijan lo que la demo asume de el (topics, sobre del update,
+ * cookie de suscriptor) y que hereda los canales de routes/channels.php.
+ */
 class MercureTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const SUBSCRIBER_KEY = 'test-mercure-subscriber-key-32-bytes!!';
+    private const SUBSCRIBE_SECRET = 'test-mercure-subscriber-key-32-bytes!!';
 
-    /** @var list<Update> */
-    private array $published = [];
+    private const COOKIE = 'mercureAuthorization';
+
+    private const TOPIC_PREFIX = 'https://laravel.alt/echo/channel/';
 
     protected function setUp(): void
     {
         parent::setUp();
 
         config([
-            'broadcasting.connections.mercure.subscriber_key' => self::SUBSCRIBER_KEY,
-            'broadcasting.connections.mercure.subscriber_ttl' => 600,
+            'broadcasting.connections.mercure.url' => 'http://hub.test/.well-known/mercure',
+            'broadcasting.connections.mercure.public_url' => 'http://localhost/.well-known/mercure',
+            'broadcasting.connections.mercure.publish_secret' => 'test-mercure-publisher-key-32-bytes!!!',
+            'broadcasting.connections.mercure.subscribe_secret' => self::SUBSCRIBE_SECRET,
+            'broadcasting.connections.mercure.subscribe_expiration' => 10,
+            'broadcasting.connections.mercure.cookie_name' => self::COOKIE,
         ]);
-
-        $this->app->instance(HubInterface::class, new MockHub(
-            'http://hub.test/.well-known/mercure',
-            new StaticTokenProvider('publisher-jwt'),
-            function (Update $update): string {
-                $this->published[] = $update;
-
-                return 'urn:uuid:test';
-            },
-            publicUrl: 'http://public.test/.well-known/mercure',
-        ));
     }
 
     public function test_broadcast_publishes_a_private_update_per_channel(): void
     {
-        Broadcast::connection('mercure')->broadcast(['private-user.1'], 'notification', [
+        /** @var list<Update> $published */
+        $published = [];
+
+        $broadcaster = Broadcast::connection('mercure');
+        $broadcaster->setHub(new MockHub(
+            'http://hub.test/.well-known/mercure',
+            new StaticTokenProvider('publisher-jwt'),
+            function (Update $update) use (&$published): string {
+                $published[] = $update;
+
+                return 'urn:uuid:test';
+            },
+            cookieName: self::COOKIE,
+        ));
+
+        $broadcaster->broadcast(['private-user.1'], 'notification', [
             'message' => 'hola',
-            'socket' => 'ignored',
+            'socket' => null,
         ]);
 
-        $this->assertCount(1, $this->published);
+        $this->assertCount(1, $published);
 
-        $update = $this->published[0];
-        $this->assertSame(['private-user.1'], $update->getTopics());
+        $update = $published[0];
+        $this->assertSame([self::TOPIC_PREFIX.'private-user.1'], $update->getTopics());
         $this->assertTrue($update->isPrivate());
-        $this->assertSame('notification', $update->getType());
-        $this->assertSame('{"message":"hola"}', $update->getData());
+        $this->assertSame([
+            'channels' => ['private-user.1'],
+            'event' => 'notification',
+            'payload' => ['message' => 'hola'],
+        ], json_decode($update->getData(), true));
     }
 
-    public function test_token_for_own_channel_only_allows_that_topic(): void
+    public function test_auth_for_own_channel_sets_a_cookie_for_that_topic(): void
     {
         $user = User::factory()->create();
         $channel = "private-user.{$user->id}";
 
-        $response = $this->postJson('/api/mercure/token', ['channel' => $channel], $this->bearer($user))
+        $response = $this->auth([$channel], $user)
             ->assertOk()
             ->assertJson([
-                'hub_url' => 'http://public.test/.well-known/mercure',
-                'topic' => $channel,
+                'channel_names' => [['name' => $channel]],
                 'expires_in' => 600,
             ]);
 
-        $this->assertEqualsWithDelta(microtime(true) * 1000, $response->json('server_time'), 5000);
-
-        $claims = JWT::decode($response->json('token'), new Key(self::SUBSCRIBER_KEY, 'HS256'));
-
-        $this->assertSame([$channel], $claims->mercure->subscribe);
+        $this->assertArrayNotHasKey('denied', $response->json('channel_names.0'));
+        $this->assertStringContainsString(self::TOPIC_PREFIX.$channel, $this->cookieClaims($response));
     }
 
-    public function test_token_for_someone_elses_channel_is_denied(): void
+    public function test_auth_for_someone_elses_channel_is_denied(): void
     {
         $user = User::factory()->create();
         $other = User::factory()->create();
+        $channel = "private-user.{$other->id}";
 
-        $this->postJson('/api/mercure/token', ['channel' => "private-user.{$other->id}"], $this->bearer($user))
-            ->assertForbidden();
+        $response = $this->auth([$channel], $user)
+            ->assertOk()
+            ->assertJson(['channel_names' => [['name' => $channel, 'denied' => true]]]);
+
+        $this->assertStringNotContainsString(self::TOPIC_PREFIX.$channel, $this->cookieClaims($response));
     }
 
-    public function test_token_requires_a_session_and_a_channel(): void
+    public function test_auth_requires_a_session(): void
     {
-        $this->postJson('/api/mercure/token', ['channel' => 'private-user.1'])->assertUnauthorized();
-
-        $this->postJson('/api/mercure/token', [], $this->bearer(User::factory()->create()))
-            ->assertStatus(400);
+        $this->postJson('/api/broadcasting/mercure/auth', ['channel_names' => ['private-user.1']])
+            ->assertUnauthorized();
     }
 
     /**
-     * @return array<string, string>
+     * @param  list<string>  $channels
      */
-    private function bearer(User $user): array
+    private function auth(array $channels, User $user): TestResponse
     {
-        return ['Authorization' => 'Bearer '.app(JwtService::class)->issue($user)['token']];
+        return $this->postJson('/api/broadcasting/mercure/auth', ['channel_names' => $channels], [
+            'Authorization' => 'Bearer '.app(JwtService::class)->issue($user)['token'],
+        ]);
+    }
+
+    /**
+     * Claims del JWT de la cookie como JSON, verificando la firma con la clave
+     * que tiene el hub.
+     */
+    private function cookieClaims(TestResponse $response): string
+    {
+        $cookie = $response->getCookie(self::COOKIE, decrypt: false);
+
+        $this->assertNotNull($cookie, 'La respuesta no trae la cookie de suscriptor.');
+        $this->assertTrue($cookie->isHttpOnly());
+        $this->assertSame('/.well-known/mercure', $cookie->getPath());
+
+        $claims = JWT::decode($cookie->getValue(), new Key(self::SUBSCRIBE_SECRET, 'HS256'));
+
+        return json_encode($claims, JSON_UNESCAPED_SLASHES);
     }
 }

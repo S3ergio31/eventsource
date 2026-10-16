@@ -9,7 +9,7 @@ están en el [README raíz](../README.md).
 |---|---|
 | Cliente del driver `sse` (`@microsoft/fetch-event-source`) | `src/app/sse.service.ts` |
 | Cliente del driver `apigateway` (WebSocket + ticket) | `src/app/ws.service.ts` |
-| Cliente del driver `mercure` (SSE al hub + JWT de suscriptor) | `src/app/mercure.service.ts` |
+| Cliente del driver `mercure` (Laravel Echo, conector `mercure`) | `src/app/mercure.service.ts` |
 | Interfaz común de los tres | `src/app/transport.ts` |
 | Columna de la home (estado, eventos, latencia) | `src/app/transport-feed.ts` |
 | URLs del backend | `src/app/api.config.ts` |

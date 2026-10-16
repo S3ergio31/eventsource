@@ -10,5 +10,8 @@ return [
     'allowed_headers' => ['*'],
     'exposed_headers' => [],
     'max_age' => 0,
-    'supports_credentials' => false,
+    // El driver mercure entrega el JWT de suscriptor en una cookie: sin
+    // credenciales el navegador descarta el Set-Cookie de una respuesta de
+    // otro origen (Angular corre en :4200, la API en :8000).
+    'supports_credentials' => true,
 ];

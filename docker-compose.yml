@@ -54,6 +54,9 @@ services:
       MERCURE_PUBLISHER_JWT_KEY: dev-only-mercure-publisher-key-min-32-bytes
       MERCURE_SUBSCRIBER_JWT_KEY: dev-only-mercure-subscriber-key-min-32-bytes
       MERCURE_CORS_ORIGINS: http://localhost:4200
+      MERCURE_COOKIE_NAME: mercureAuthorization
+      # Claim iss de los tokens que firma Laravel; el hub solo confia en este.
+      MERCURE_ISSUER: http://localhost:8000
     depends_on:
       redis:
         condition: service_healthy

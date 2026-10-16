@@ -11,7 +11,7 @@ conexión con el navegador** y dónde vive el estado para reanudar.
 |---|---|---|---|
 | [`sse`](#driver-sse-sse-desde-php--redis-streams) | un hilo PHP por cliente (FrankenPHP) | SSE | Redis Streams |
 | [`apigateway`](#driver-apigateway-api-gateway-websocket--dynamodb) | AWS API Gateway WebSocket | WebSocket | DynamoDB |
-| [`mercure`](#driver-mercure-hub-mercure-dentro-de-frankenphp) | hub Mercure (Go) dentro de FrankenPHP | SSE | Bolt (archivo local del hub) |
+| [`mercure`](#driver-mercure-driver-nativo-de-laravel--echo-hub-dentro-de-frankenphp) | driver nativo de Laravel + Echo; hub Mercure (Go) dentro de FrankenPHP | SSE | Bolt (archivo local del hub) |
 
 Los tres corren **a la vez**: un mismo `UserNotification` sale por todos los
 drivers de `BROADCAST_FANOUT` (por defecto `sse,apigateway,mercure`). Laravel arma
@@ -111,7 +111,7 @@ sea el elegido:
 | Middleware que pone el user id en el request | `api/app/Http/Middleware/EnsureJwt.php` |
 | Emisión y verificación de JWT | `api/app/Services/JwtService.php` |
 | Autorización de canales privados (única fuente de verdad) | `api/routes/channels.php` |
-| Autorización compartida por `apigateway` y `mercure` | `api/app/Broadcasting/AuthorizesChannelAccess.php` |
+| Autorización del driver `apigateway` (el `mercure` nativo trae la suya) | `api/app/Broadcasting/AuthorizesChannelAccess.php` |
 | El evento de prueba | `api/app/Events/UserNotification.php` |
 | El disparador | `api/app/Console/Commands/DemoNotify.php` |
 | Interfaz común de los clientes y columna de la home | `web/src/app/transport.ts`, `web/src/app/transport-feed.ts` |
@@ -179,7 +179,7 @@ Los tres detalles que hacen que un stream en PHP funcione:
 así que un corte de red no deja huecos. La salvedad: la librería guarda el último
 id **en memoria**, así que un recargado completo de la página arranca de cero
 (`resumedFrom: "$"`, solo lo nuevo). Para que sobreviva a un F5 habría que
-persistir el último id en el cliente, como hacen los otros dos drivers.
+persistir el último id en el cliente, como hace el driver `apigateway`.
 
 ### Probar
 
@@ -378,7 +378,7 @@ Con los outputs:
 | Cliente | `web/src/app/ws.service.ts` |
 | Infraestructura AWS | `infra/template.yaml` |
 
-## Driver `mercure`: hub Mercure dentro de FrankenPHP
+## Driver `mercure`: driver nativo de Laravel + Echo, hub dentro de FrankenPHP
 
 Un borde **ya hecho y autoalojado**. FrankenPHP trae **Mercure integrado**, así que
 el hub corre en el mismo binario y contenedor que Laravel, sin servicios nuevos. El
@@ -386,60 +386,97 @@ navegador recibe SSE, como en el driver `sse`, pero la conexión la sostiene el 
 **escrito en Go**: cada suscriptor es una goroutine, no uno de los `num_threads`
 de PHP.
 
+A diferencia de los otros dos, este driver **no es código propio**: es el driver
+`mercure` que trae Laravel 13 (`Illuminate\Broadcasting\Broadcasters\MercureBroadcaster`)
+y, en el navegador, el conector `mercure` de Laravel Echo.
+
 ```
-Angular ─POST /api/mercure/token (Bearer JWT)─► Laravel: routes/channels.php
-   │                                             └► JWT de suscriptor {mercure.subscribe: [canal]}
+Angular (Echo) ─POST /api/broadcasting/mercure/auth { channel_names } (Bearer JWT)─► Laravel
+   │                                                       routes/channels.php ◄─┘
+   │◄── Set-Cookie: mercureAuthorization=<JWT de suscriptor> (HttpOnly, Path=/.well-known/mercure)
    │
-   └─ fetchEventSource(/.well-known/mercure?topic=private-user.1)
-      Authorization: Bearer <JWT de suscriptor>
-                  │
+   └─ new EventSource(/.well-known/mercure?match=…, { withCredentials: true })
+                  │  el navegador manda la cookie
                   ▼
    FrankenPHP :8000 ─┬─ /.well-known/mercure → hub Mercure (Go) ── historial Bolt
                      └─ todo lo demás        → Laravel (PHP)
                                                   │
-   demo:notify ─► driver mercure ─ 1 POST privado al hub, sin importar cuántos suscriptores
+   demo:notify ─► driver mercure ─ 1 POST privado al hub por canal, sin importar cuántos suscriptores
 ```
 
 ### Cómo funciona
 
 - **Hub.** Es la directiva `mercure` de `api/docker/Caddyfile`, dentro de un `route`
-  para que atienda `/.well-known/mercure` antes de llegar a PHP. Las claves JWT
-  vienen del `environment` de `docker-compose.yml`: Caddy las lee del entorno del
-  proceso, no del `.env`.
-- **Publicar.** `MercureBroadcaster` usa `symfony/mercure` (sin el framework
-  Symfony). Cada canal de Laravel es un topic con el mismo nombre, y las
-  publicaciones son **privadas**.
+  para que atienda `/.well-known/mercure` antes de llegar a PHP. Las claves JWT y
+  el nombre de la cookie vienen del `environment` de `docker-compose.yml`: Caddy
+  los lee del entorno del proceso, no del `.env`.
+- **Publicar.** El driver nativo publica un update **privado** por canal. El topic
+  es `https://laravel.alt/echo/channel/private-user.1` y el `data` es el sobre de
+  Echo: `{ channels, event, payload }`.
 - **Autorizar.** El hub no le pregunta nada a Laravel. Solo entrega un update
-  privado a quien presente un JWT cuyo claim `mercure.subscribe` incluya el topic.
-  Ese JWT lo firma `POST /api/mercure/token` **después** de pasar por
-  `routes/channels.php`. Pedir el topic de otro usuario con tu token no da error:
-  el hub simplemente no te entrega sus eventos.
-- **Reanudar.** Es `Last-Event-ID` nativo: el hub asigna los ids (`urn:uuid:…`) y
-  repone desde su historial (transporte Bolt, últimos 1000 updates). El cliente,
-  además, guarda el último id en `localStorage`, así que también sobrevive a un F5.
-- **Token vencido.** Si el hub responde 401 (el JWT duró
-  `MERCURE_SUBSCRIBER_TTL`), el cliente pide otro token y sigue desde el último id.
+  privado a quien presente un JWT de suscriptor que incluya el topic. Ese JWT lo
+  firma `POST /api/broadcasting/mercure/auth` **después** de pasar por
+  `routes/channels.php`, y viaja en una **cookie HttpOnly**, porque el `EventSource`
+  nativo no puede mandar headers. Un canal ajeno vuelve marcado `denied` y queda
+  fuera del JWT; Echo lo saca y avisa por `.error()`.
+- **Por qué un endpoint propio de auth.** `/api/broadcasting/auth` usa el driver por
+  defecto (`sse`). La ruta de Mercure llama a
+  `Broadcast::connection('mercure')->auth()`, detrás del mismo middleware `jwt`.
+- **Canales heredados.** `BroadcastServiceProvider` construye el driver con el mismo
+  creador del framework (`createMercureDriver()`) y solo le copia los callbacks de
+  `routes/channels.php`, igual que a `apigateway`.
+- **Reanudar.** Echo reconecta con backoff y manda `last_event_id`; el hub repone
+  desde su historial (Bolt, últimos 1000 updates). El último id vive **solo en
+  memoria**: tras un F5 no hay reposición, como en el driver `sse`.
+- **Renovación.** Echo vuelve a pedir la cookie al 80 % de
+  `MERCURE_SUBSCRIBE_EXPIRATION` (minutos), sin cortar el stream.
+
+### Qué exige la cookie
+
+- **CORS con credenciales.** Angular (`:4200`) y la API (`:8000`) son orígenes
+  distintos: `config/cors.php` tiene `supports_credentials => true`, y el hub
+  necesita `cors_origins` con el origen explícito.
+- **Mismo sitio.** La cookie es `SameSite=Strict`. En local funciona porque el
+  puerto no cuenta para el sitio. En producción el front y el hub tienen que
+  compartir dominio registrable (`app.ejemplo.com` / `api.ejemplo.com`).
+- **Nombre sin prefijo en HTTP.** El nombre por defecto,
+  `__Secure-mercure_access_token`, exige HTTPS. En local se usa
+  `MERCURE_COOKIE_NAME=mercureAuthorization`, igual en Laravel y en el Caddyfile.
+- **Protocolo Mercure 1.0.** El driver y Echo hablan la versión 1.0 del protocolo
+  (`match`, `last_event_id`, claim `authorization_details`). FrankenPHP 1.12 trae
+  Mercure 0.24 (protocolo legacy): rechaza el JWT publicador con 401 y no entiende
+  `match`. Por eso el Dockerfile fija `dunglas/frankenphp:1.13.0-php8.4`, que trae
+  Mercure 1.0.
+- **Emisor de confianza.** Mercure 1.0 declara las claves dentro de un bloque
+  `issuer` del Caddyfile y solo acepta tokens cuyo `iss` coincida.
+  `MERCURE_ISSUER` es ese valor, compartido por el hub y por Laravel.
 
 ### Probar
 
 ```bash
-# Sin JWT, el hub rechaza (401)
-curl -i "localhost:8000/.well-known/mercure?topic=private-user.1"
+# Sin cookie, el hub rechaza (401)
+curl -i "localhost:8000/.well-known/mercure?match=https%3A%2F%2Flaravel.alt%2Fecho%2Fchannel%2Fprivate-user.1"
 
-# Con token de suscriptor
-MERCURE=$(curl -s localhost:8000/api/mercure/token -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d '{"channel":"private-user.1"}' | jq -r .token)
-curl -N "localhost:8000/.well-known/mercure?topic=private-user.1" -H "Authorization: Bearer $MERCURE"
+# Pedir la cookie y suscribirse con ella
+curl -s -c /tmp/mercure.jar localhost:8000/api/broadcasting/mercure/auth \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"channel_names":["private-user.1"]}'
+curl -N -b /tmp/mercure.jar \
+  "localhost:8000/.well-known/mercure?match=https%3A%2F%2Flaravel.alt%2Fecho%2Fchannel%2Fprivate-user.1"
+
+# El canal de otro usuario vuelve con "denied": true
+curl -s localhost:8000/api/broadcasting/mercure/auth \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"channel_names":["private-user.2"]}'
 ```
 
-Lo que se verificó al montarlo:
+Lo que se verificó con el driver propio anterior, y que depende del hub y no del
+driver:
 
 - **Capacidad.** Con **150 suscripciones abiertas al hub**, más del doble de
   `num_threads 64`, Laravel siguió respondiendo con normalidad y un solo
   `demo:notify` llegó a los 150 suscriptores. Con el driver `sse`, la conexión 65
   ya no tendría hilo.
-- **Reposición.** Una reconexión con `Last-Event-ID` recupera exactamente los
-  eventos perdidos.
 
 ### Límites
 
@@ -448,21 +485,25 @@ Lo que se verificó al montarlo:
   requiere la versión High Availability de Mercure (de pago) o un hub aparte con
   transporte compartido. El driver no cambia: solo cambia `MERCURE_URL`.
 - **Revocación.** Como el hub no reconsulta, un acceso quitado sigue valiendo hasta
-  que vence el JWT de suscriptor. `MERCURE_SUBSCRIBER_TTL` es esa ventana.
+  que vence la cookie. `MERCURE_SUBSCRIBE_EXPIRATION` es esa ventana.
 - **Mismo proceso.** Reiniciar FrankenPHP para desplegar Laravel corta también las
-  conexiones del hub. Los clientes reconectan con `Last-Event-ID` y no pierden
-  eventos, pero sí reconectan todos a la vez. Separar el hub en su propio
-  contenedor lo evita, sin cambiar el driver.
+  conexiones del hub. Los clientes reconectan todos a la vez. Separar el hub en su
+  propio contenedor lo evita, sin cambiar el driver.
+- **Menos visibilidad en el cliente.** Echo no expone el id SSE de cada evento ni el
+  cursor de reposición, y la cookie es HttpOnly: la columna de la home no puede
+  mostrarlos. `replayed` se calcula con el reloj del navegador.
 
 ### Las piezas
 
 | Qué | Dónde |
 |---|---|
-| El driver | `api/app/Broadcasting/MercureBroadcaster.php` |
-| JWT de suscriptor | `api/app/Http/Controllers/MercureTokenController.php` |
+| El driver (nativo) | `Illuminate\Broadcasting\Broadcasters\MercureBroadcaster` (en `api/vendor/laravel/framework`) |
+| Registro con los canales heredados | `api/app/Providers/BroadcastServiceProvider.php` |
+| Endpoint de auth de Echo | `api/routes/api.php` → `/broadcasting/mercure/auth` |
 | El hub | `api/docker/Caddyfile` (directiva `mercure`) |
-| Claves del hub | `docker-compose.yml` → `api.environment` |
-| Cliente | `web/src/app/mercure.service.ts` |
+| Claves del hub, emisor y nombre de la cookie | `docker-compose.yml` → `api.environment` |
+| Versión del hub (FrankenPHP 1.13, Mercure 1.0) | `api/docker/Dockerfile` |
+| Cliente (Echo) | `web/src/app/mercure.service.ts` |
 
 ## Evaluación y decisión
 
@@ -474,17 +515,17 @@ Lo que se verificó al montarlo:
 | Capacidad por nodo | techo duro: `num_threads` (64 aquí), ~30-60 MB por conexión | administrada por AWS | miles de conexiones; 150 verificadas sin afectar a Laravel |
 | Escala horizontal | Redis compartido, pero sigue atada a hilos PHP | administrada por AWS | requiere Mercure HA (de pago) o hub con transporte compartido |
 | Protocolo al navegador | SSE | WebSocket | SSE |
-| Auth del handshake | `Authorization: Bearer` | ticket de 60 s en la query | JWT de suscriptor en `Authorization` |
-| Autorización | en cada conexión (`channels.php`) | en cada `subscribe` (`channels.php`) | al emitir el JWT; el hub no reconsulta |
-| Revocación de acceso | inmediata en la próxima conexión | inmediata en el próximo `subscribe` | tarda hasta `MERCURE_SUBSCRIBER_TTL` |
-| Reanudar sin pérdida | `Last-Event-ID` nativo, en memoria (no sobrevive a F5) | `lastId` a mano + `localStorage` | `Last-Event-ID` nativo + `localStorage` |
+| Auth del handshake | `Authorization: Bearer` | ticket de 60 s en la query | JWT de suscriptor en cookie HttpOnly |
+| Autorización | en cada conexión (`channels.php`) | en cada `subscribe` (`channels.php`) | al emitir la cookie; el hub no reconsulta |
+| Revocación de acceso | inmediata en la próxima conexión | inmediata en el próximo `subscribe` | tarda hasta `MERCURE_SUBSCRIBE_EXPIRATION` |
+| Reanudar sin pérdida | `Last-Event-ID` nativo, en memoria (no sobrevive a F5) | `lastId` a mano + `localStorage` | `last_event_id` vía Echo, en memoria (no sobrevive a F5) |
 | Fan-out desde Laravel | 1 `XADD` | N `PostToConnection` | 1 POST al hub |
 | Estado externo | Redis | DynamoDB (3 tablas con TTL) | ninguno (archivo Bolt local) |
 | Límites duros | los que pongas | 2 h por conexión, 10 min idle, 128 KB por mensaje | los que pongas |
 | Servicios a operar | Redis | API Gateway + DynamoDB (administrados) | ninguno extra (va en FrankenPHP) |
 | Costo | infraestructura propia, crece con hilos PHP | ~US$0.25/millón de minutos-conexión + ~US$1/millón de mensajes + DynamoDB por request | infraestructura propia; licencia si se necesita HA |
 | Lock-in | bajo | alto (AWS) | bajo (protocolo abierto, hub reemplazable) |
-| Complejidad del cliente | baja | media (ticket, `subscribe`, `ping`, dedupe) | baja (más renovar el token en 401) |
+| Complejidad del cliente | baja | media (ticket, `subscribe`, `ping`, dedupe) | mínima (Echo), pero exige CORS con credenciales y mismo sitio |
 
 ### Recomendación preliminar
 
@@ -495,8 +536,8 @@ Lo que se verificó al montarlo:
   que no se resuelve con más hardware. Queda como línea base de la evaluación y
   como prueba de que las piezas comunes (JWT, `channels.php`, cliente) funcionan.
 - **`mercure` es la opción por defecto.** Saca las conexiones de PHP sin agregar
-  servicios, mantiene SSE con `Last-Event-ID` nativo, el cliente es el más simple y
-  el protocolo es abierto. Alcanza mientras un nodo (o un hub dedicado) soporte la
+  servicios, el driver y el cliente son los oficiales de Laravel (sin código
+  propio) y el protocolo es abierto. Alcanza mientras un nodo (o un hub dedicado) soporte la
   carga.
 - **`apigateway` si la empresa ya opera en AWS y necesita escala horizontal
   administrada** desde el día uno, o si prefiere pagar por uso antes que la
@@ -524,4 +565,4 @@ Lo que cambiaría la recomendación:
    API Gateway + DynamoDB frente a infraestructura propia (y licencia HA) para
    Mercure.
 4. **Requisito de revocación** de accesos: definir la ventana aceptable para fijar
-   `MERCURE_SUBSCRIBER_TTL`.
+   `MERCURE_SUBSCRIBE_EXPIRATION`.

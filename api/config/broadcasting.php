@@ -58,28 +58,47 @@ return [
             'events_ttl' => (int) env('WS_EVENTS_TTL', 86400),
         ],
 
-        // Driver custom 'mercure': el hub Mercure integrado en FrankenPHP sostiene
-        // las conexiones SSE y Laravel solo publica. Ver docker/Caddyfile.
-        // Registrado con Broadcast::extend('mercure') en BroadcastServiceProvider.
+        // Driver nativo 'mercure' de Laravel: el hub Mercure integrado en
+        // FrankenPHP sostiene las conexiones SSE y Laravel solo publica. Ver
+        // docker/Caddyfile. BroadcastServiceProvider solo le agrega los
+        // canales de routes/channels.php; el broadcaster es el del framework.
         'mercure' => [
             'driver' => 'mercure',
 
             // Donde publica Laravel. El hub vive en el mismo FrankenPHP, asi
-            // que desde adentro del contenedor es localhost.
-            'hub_url' => env('MERCURE_URL', 'http://localhost:8000/.well-known/mercure'),
+            // que desde adentro del contenedor es localhost. Tiene que estar:
+            // sin url, Laravel publica con mercure_publish(), que solo existe
+            // en peticiones de FrankenPHP y no en demo:notify (Artisan).
+            'url' => env('MERCURE_URL', 'http://localhost:8000/.well-known/mercure'),
 
-            // Donde se suscribe el navegador.
+            // Donde se suscribe el navegador. Tambien define el Path de la
+            // cookie de suscriptor (/.well-known/mercure).
             'public_url' => env('MERCURE_PUBLIC_URL', 'http://localhost:8000/.well-known/mercure'),
 
             // Las mismas claves que usa el hub (Caddyfile). Caddy las lee del
             // entorno del contenedor, no del .env: ver docker-compose.yml.
-            'publisher_key' => env('MERCURE_PUBLISHER_JWT_KEY'),
-            'subscriber_key' => env('MERCURE_SUBSCRIBER_JWT_KEY'),
+            'publish_secret' => env('MERCURE_PUBLISHER_JWT_KEY'),
+            'subscribe_secret' => env('MERCURE_SUBSCRIBER_JWT_KEY'),
 
-            // Segundos de vida del JWT de suscriptor. El hub no vuelve a
-            // consultar a Laravel mientras sea valido: es la ventana en la que
-            // un acceso revocado todavia funciona.
-            'subscriber_ttl' => (int) env('MERCURE_SUBSCRIBER_TTL', 3600),
+            // Claim iss de los tokens (publicador y suscriptor). Mercure 1.0 lo
+            // exige igual al bloque issuer del Caddyfile. Sin esto el driver
+            // usa APP_URL, que coincide hoy pero por casualidad.
+            'claims' => [
+                'iss' => env('MERCURE_ISSUER', env('APP_URL')),
+            ],
+
+            // Minutos de vida de la cookie de suscriptor. El hub no vuelve a
+            // consultar a Laravel mientras sea valida: es la ventana en la que
+            // un acceso revocado todavia funciona. Echo re-autentica al 80 %.
+            'subscribe_expiration' => (int) env('MERCURE_SUBSCRIBE_EXPIRATION', 60),
+
+            // El default (__Secure-mercure_access_token) exige HTTPS y el
+            // entorno local es HTTP. Tiene que coincidir con cookie_name del
+            // Caddyfile.
+            'cookie_name' => env('MERCURE_COOKIE_NAME', 'mercureAuthorization'),
+
+            // Sin whispers en la demo: el JWT solo lleva permisos de subscribe.
+            'client_events' => false,
         ],
 
         'log' => [
